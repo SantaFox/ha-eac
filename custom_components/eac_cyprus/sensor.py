@@ -26,6 +26,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -122,23 +123,49 @@ async def async_setup_entry(
     """Create sensors for all currently-known channels and watch for new ones."""
     coordinator: EacCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    known: set[tuple[str, str]] = set()  # (service_point_id, channel_id)
+    known_channels: set[tuple[str, str]] = set()  # (service_point_id, channel_id)
+    known_diagnostic: set[str] = set()  # service_point_id
 
     @callback
     def _add_new_entities() -> None:
-        new_entities: list[EacChannelSensor] = []
+        new_entities: list[CoordinatorEntity[EacCoordinator]] = []
         for sp_state in coordinator.data.points.values():
             for ch_state in sp_state.channels.values():
                 key = (sp_state.service_point.id, ch_state.channel.id)
-                if key in known:
+                if key in known_channels:
                     continue
-                known.add(key)
-                new_entities.append(EacChannelSensor(coordinator, sp_state, ch_state.channel.id))
+                known_channels.add(key)
+                new_entities.append(
+                    EacChannelSensor(coordinator, sp_state, ch_state.channel.id)
+                )
+            # One diagnostic sensor per device (= per active service point that
+            # produced a meter config). Inactive points don't get a device, so
+            # they don't get one either.
+            if (
+                sp_state.active_meter is not None
+                and sp_state.service_point.id not in known_diagnostic
+            ):
+                known_diagnostic.add(sp_state.service_point.id)
+                new_entities.append(EacLastUpdateSensor(coordinator, sp_state))
         if new_entities:
             async_add_entities(new_entities)
 
     _add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(_add_new_entities))
+
+
+def _device_info_for(sp_state: ServicePointState) -> DeviceInfo:
+    meter = sp_state.active_meter
+    return DeviceInfo(
+        identifiers={(DOMAIN, sp_state.service_point.id)},
+        name=sp_state.service_point.address or f"EAC {sp_state.service_point.id}",
+        manufacturer=meter.manufacturer if meter else MANUFACTURER,
+        model=meter.model if meter else None,
+        serial_number=meter.serial_number if meter else sp_state.service_point.serial_number,
+        configuration_url=(
+            f"https://meterreading-dso.eac.com.cy/sp/{sp_state.service_point.id}"
+        ),
+    )
 
 
 class EacChannelSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
@@ -160,15 +187,7 @@ class EacChannelSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
         self.entity_description = _description_for(ch.uom, ch.type, ch.interval)
         self._attr_unique_id = f"{self._sp_id}_{self._channel_id}"
 
-        meter = sp_state.active_meter
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._sp_id)},
-            name=sp_state.service_point.address or f"EAC {self._sp_id}",
-            manufacturer=meter.manufacturer if meter else MANUFACTURER,
-            model=meter.model if meter else None,
-            serial_number=meter.serial_number if meter else sp_state.service_point.serial_number,
-            configuration_url=f"https://meterreading-dso.eac.com.cy/sp/{self._sp_id}",
-        )
+        self._attr_device_info = _device_info_for(sp_state)
 
     @property
     def _ch_state(self):
@@ -219,3 +238,32 @@ class EacChannelSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
+
+
+class EacLastUpdateSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
+    """Diagnostic timestamp showing when the coordinator last refreshed.
+
+    Lets users distinguish "polling is alive but the DSO has no fresh data"
+    from "polling is broken" without digging into logs. Reports the same
+    value across every device the integration owns — there is one polling
+    cycle for the whole config entry.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Last successful update"
+
+    def __init__(
+        self, coordinator: EacCoordinator, sp_state: ServicePointState
+    ) -> None:
+        super().__init__(coordinator)
+        self._sp_id = sp_state.service_point.id
+        self._attr_unique_id = f"{self._sp_id}_last_update"
+        self._attr_device_info = _device_info_for(sp_state)
+
+    @property
+    def native_value(self) -> datetime | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.last_success_time

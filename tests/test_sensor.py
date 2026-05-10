@@ -33,8 +33,9 @@ async def test_full_setup_creates_sensors(
     states = [
         s for s in hass.states.async_all() if s.entity_id.startswith("sensor.")
     ]
-    # One sensor per channel that returned data — 2 channels for the active SP.
-    assert len(states) == 2
+    # Two channel sensors + one diagnostic "Last successful update" for the
+    # single active service point.
+    assert len(states) == 3
 
     # Check the cumulative total sensor.
     total = next(s for s in states if "total_24h" in s.entity_id)
@@ -44,6 +45,24 @@ async def test_full_setup_creates_sensors(
     assert total.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
     assert total.attributes["channel_type"] == "S-KWH-24H"
     assert "last_cumulative_reading" in total.attributes
+
+
+async def test_last_update_diagnostic_sensor(
+    hass: HomeAssistant, patch_eac_client
+) -> None:
+    """Each active service point exposes a TIMESTAMP diagnostic entity."""
+    from datetime import datetime
+
+    await _setup_integration(hass, patch_eac_client)
+    state = next(
+        s
+        for s in hass.states.async_all()
+        if s.entity_id.startswith("sensor.") and "last_successful_update" in s.entity_id
+    )
+    assert state.attributes["device_class"] == SensorDeviceClass.TIMESTAMP
+    # The state is an ISO-8601 timestamp set by the coordinator on success.
+    parsed = datetime.fromisoformat(state.state)
+    assert parsed.tzinfo is not None
 
 
 async def test_30min_channel_is_power(

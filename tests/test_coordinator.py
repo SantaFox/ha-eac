@@ -26,12 +26,18 @@ def _make_entry(hass: HomeAssistant) -> MockConfigEntry:
 async def test_coordinator_update_active_and_inactive_points(
     hass: HomeAssistant, mock_client
 ) -> None:
+    from datetime import UTC, datetime, timedelta
+
     entry = _make_entry(hass)
     coord = EacCoordinator(hass, mock_client, entry)
     data = await coord._async_update_data()
 
     assert data.user.name == "Test User"
     assert set(data.points) == {"111111111111", "222222222222"}
+
+    # last_success_time should be set to "now" on every successful refresh.
+    assert data.last_success_time.tzinfo is not None
+    assert datetime.now(UTC) - data.last_success_time < timedelta(seconds=10)
 
     active = data.points["111111111111"]
     assert active.active_meter is not None

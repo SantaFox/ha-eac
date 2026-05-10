@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -45,6 +45,7 @@ class EacData:
     """What the coordinator hands to entities."""
     user: UserDetails
     points: dict[str, ServicePointState]  # keyed by service-point id
+    last_success_time: datetime  # tz-aware UTC; surfaced via a diagnostic sensor
 
 
 class EacCoordinator(DataUpdateCoordinator[EacData]):
@@ -69,7 +70,7 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
         except EacApiError as err:
             raise UpdateFailed(f"API error: {err}") from err
 
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=HISTORY_DAYS)
 
         points: dict[str, ServicePointState] = {}
@@ -113,7 +114,7 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
                 service_point=sp, active_meter=active_meter, channels=channels
             )
 
-        return EacData(user=user, points=points)
+        return EacData(user=user, points=points, last_success_time=datetime.now(UTC))
 
 
 def _latest_reading(channels: list[ChannelReadings], channel_id: str) -> Reading | None:
