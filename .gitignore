@@ -1,0 +1,36 @@
+# secrets — НИКОГДА не коммитить
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# scratch / разведка
+.scratch/
+
+# Claude Code session state
+.claude/
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.tox/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp

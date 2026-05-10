@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EAC Distribution Web Portal",
+        "description": "Введите логин и пароль от meterreading-dso.eac.com.cy.",
+        "data": {
+          "email": "Email",
+          "password": "Пароль",
+          "base_url": "URL портала"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Неверный email или пароль.",
+      "cannot_connect": "Не удалось подключиться к порталу EAC.",
+      "unknown": "Непредвиденная ошибка — посмотрите логи Home Assistant."
+    },
+    "abort": {
+      "already_configured": "Этот аккаунт уже добавлен."
+    }
+  }
+}
