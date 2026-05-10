@@ -20,7 +20,13 @@ from eac_dso_portal import (
     ServicePoint,
     UserDetails,
 )
-from .const import DOMAIN, HISTORY_DAYS, SCAN_INTERVAL
+from .const import (
+    CONF_HISTORY_DAYS,
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_HISTORY_DAYS,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,10 +62,19 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
             hass,
             _LOGGER,
             name=f"{DOMAIN} ({entry.title})",
-            update_interval=SCAN_INTERVAL,
+            update_interval=_interval_from_options(entry),
         )
         self._client = client
         self._entry = entry
+
+    def apply_options(self) -> None:
+        """Re-read the config entry's options and adjust polling cadence.
+
+        Called by the options-flow update listener. ``history_days`` is read
+        on every refresh, so only the poll interval needs to be propagated
+        here. The new value takes effect on the next scheduled tick.
+        """
+        self.update_interval = _interval_from_options(self._entry)
 
     async def _async_update_data(self) -> EacData:
         try:
@@ -71,7 +86,8 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
             raise UpdateFailed(f"API error: {err}") from err
 
         end = datetime.now(UTC)
-        start = end - timedelta(days=HISTORY_DAYS)
+        history_days = self._entry.options.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)
+        start = end - timedelta(days=history_days)
 
         points: dict[str, ServicePointState] = {}
         for sp in sps:
@@ -123,3 +139,10 @@ def _latest_reading(channels: list[ChannelReadings], channel_id: str) -> Reading
             continue
         return max(cr.readings, key=lambda r: r.dt)
     return None
+
+
+def _interval_from_options(entry: ConfigEntry) -> timedelta:
+    minutes = entry.options.get(
+        CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
+    )
+    return timedelta(minutes=int(minutes))

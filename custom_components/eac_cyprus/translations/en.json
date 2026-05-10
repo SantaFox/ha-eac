@@ -19,5 +19,17 @@
     "abort": {
       "already_configured": "This account is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "EAC settings",
+        "description": "Heads-up: the portal updates daily and 30-min profile data lags by hours. Polling more often than 6 hours does not give a smoother Energy Dashboard graph — for that you need statistics import (planned).",
+        "data": {
+          "scan_interval_minutes": "Polling interval",
+          "history_days": "History window (days fetched on each refresh)"
+        }
+      }
+    }
   }
 }

@@ -7,11 +7,29 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from eac_dso_portal import EacApiError, EacAuthError, EacClient
-from .const import CONF_BASE_URL, CONF_EMAIL, CONF_PASSWORD, DEFAULT_BASE_URL, DOMAIN
+from .const import (
+    CONF_BASE_URL,
+    CONF_EMAIL,
+    CONF_HISTORY_DAYS,
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_BASE_URL,
+    DEFAULT_HISTORY_DAYS,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    DOMAIN,
+    SCAN_INTERVAL_CHOICES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,9 +47,16 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
 
     The portal account is per-email and unique; we use the email as the unique
     id of the config entry, preventing duplicate entries for the same account.
+    Editable runtime settings (poll interval, history window) live in the
+    options flow below.
     """
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return EacOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -74,3 +99,64 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
         )
+
+
+# Human labels for the polling-interval dropdown.
+_INTERVAL_LABELS: dict[int, str] = {
+    30: "30 minutes",
+    60: "1 hour",
+    180: "3 hours",
+    360: "6 hours (recommended)",
+    720: "12 hours",
+    1440: "24 hours",
+}
+
+
+class EacOptionsFlow(OptionsFlow):
+    """Editable runtime settings: polling cadence and history window."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            # The select selector hands back strings; coerce to int once.
+            user_input[CONF_SCAN_INTERVAL_MINUTES] = int(
+                user_input[CONF_SCAN_INTERVAL_MINUTES]
+            )
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options
+        current_interval = current.get(
+            CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
+        )
+        current_history = current.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SCAN_INTERVAL_MINUTES, default=str(current_interval)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=str(m), label=_INTERVAL_LABELS[m]
+                            )
+                            for m in SCAN_INTERVAL_CHOICES
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    ),
+                ),
+                vol.Required(
+                    CONF_HISTORY_DAYS, default=current_history
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=60,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="days",
+                    ),
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
