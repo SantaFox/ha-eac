@@ -138,7 +138,6 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
                             sp.id,
                             ch.id,
                             ch.type,
-                            sp.address,
                             matching.readings,
                         )
 

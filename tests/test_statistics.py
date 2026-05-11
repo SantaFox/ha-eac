@@ -53,7 +53,7 @@ async def test_no_op_when_no_cumulative_readings(hass: HomeAssistant) -> None:
         "custom_components.eac_cyprus.statistics.async_add_external_statistics"
     ) as mock_add:
         import_cumulative_history(
-            hass, "111", "mc-30min", "KWH-30MIN-LP-IMP", "1 Test St", interval_only
+            hass, "111", "mc-30min", "KWH-30MIN-LP-IMP", interval_only
         )
     mock_add.assert_not_called()
 
@@ -72,19 +72,18 @@ async def test_imports_cumulative_kwh_with_correct_metadata(
         "custom_components.eac_cyprus.statistics.async_add_external_statistics"
     ) as mock_add:
         import_cumulative_history(
-            hass, "111", "mc-total", "S-KWH-24H", "1 Test St", rdgs
+            hass, "863224497404", "mc-total", "S-KWH-24H", rdgs
         )
 
     mock_add.assert_called_once()
     _, metadata, stats = mock_add.call_args.args
-    assert metadata["statistic_id"] == "eac_cyprus:111_mc-total"
+    assert metadata["statistic_id"] == "eac_cyprus:863224497404_mc-total"
     assert metadata["source"] == DOMAIN
     assert metadata["has_sum"] is True
     assert metadata["has_mean"] is False
     assert metadata["unit_of_measurement"] == UnitOfEnergy.KILO_WATT_HOUR
-    assert "EAC" in metadata["name"]
-    assert "1 Test St" in metadata["name"]
-    assert "S-KWH-24H" in metadata["name"]
+    # Short name: integration tag, last four of sp id, channel type.
+    assert metadata["name"] == "EAC 7404 S-KWH-24H"
 
     assert len(stats) == 3
     for s, expected_reading in zip(stats, [2900.0, 2924.0, 2950.0], strict=True):
@@ -93,17 +92,6 @@ async def test_imports_cumulative_kwh_with_correct_metadata(
         assert s["sum"] == expected_reading
         # External statistics do not carry `state`; we only push `sum`.
         assert "state" not in s
-
-
-async def test_imports_work_without_known_address(hass: HomeAssistant) -> None:
-    """When the service point has no address yet, the name still makes sense."""
-    rdgs = _readings(("2026-05-01T00:00:00", 100.0, 5.0))
-    with patch(
-        "custom_components.eac_cyprus.statistics.async_add_external_statistics"
-    ) as mock_add:
-        import_cumulative_history(hass, "111", "mc-x", "S-KWH-24H", "", rdgs)
-    metadata = mock_add.call_args.args[1]
-    assert metadata["name"] == "EAC S-KWH-24H"
 
 
 async def test_coordinator_pushes_stats_for_cumulative_channel_only(
@@ -124,7 +112,3 @@ async def test_coordinator_pushes_stats_for_cumulative_channel_only(
     ]
     assert "mc-total-24h" in called_channels
     assert "mc-30min-imp" not in called_channels
-    # The address is passed through so the metadata name is meaningful.
-    for c in mock_import.call_args_list:
-        # signature: (hass, sp_id, channel_id, channel_name, address, readings)
-        assert c.args[4] == "1 Test St, City"

@@ -59,7 +59,6 @@ def import_cumulative_history(
     sp_id: str,
     channel_id: str,
     channel_name: str,
-    address: str,
     readings: tuple[Reading, ...],
 ) -> None:
     """Push readings for one cumulative kWh channel as hourly external stats."""
@@ -74,10 +73,12 @@ def import_cumulative_history(
         return
 
     statistic_id = external_statistic_id(sp_id, channel_id)
-    # Build a name the user will see in Energy Dashboard's 'Add consumption'
-    # dropdown. Mention the address so users with multiple service points
-    # can tell them apart.
-    pretty_name = f"EAC {address} {channel_name}" if address else f"EAC {channel_name}"
+    # Short name for the Energy Dashboard 'Add consumption' dropdown.
+    # The last four digits of the service-point id disambiguate setups
+    # with multiple service points without dragging the full address
+    # in. The user can always rename a statistic from Settings,
+    # Long-term statistics if they want something more memorable.
+    pretty_name = f"EAC {sp_id[-4:]} {channel_name}"
 
     metadata: StatisticMetaData = {
         "has_mean": False,
