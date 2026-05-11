@@ -10,7 +10,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from eac_dso_portal import (
-    ChannelReadings,
     EacApiError,
     EacAuthError,
     EacClient,
@@ -27,6 +26,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
 )
+from .statistics import import_cumulative_history
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,23 +122,30 @@ class EacCoordinator(DataUpdateCoordinator[EacData]):
                             "No readings for sp=%s mc=%s: %s", sp.id, ch.id, err
                         )
                         continue
-                    latest = _latest_reading(per_channel, ch.id)
-                    if latest is not None:
-                        channels[ch.id] = ChannelState(channel=ch, latest=latest)
+                    matching = next(
+                        (cr for cr in per_channel if cr.channel_id == ch.id), None
+                    )
+                    if matching is None or not matching.readings:
+                        continue
+                    latest = max(matching.readings, key=lambda r: r.dt)
+                    channels[ch.id] = ChannelState(channel=ch, latest=latest)
+                    # Backfill long-term statistics for cumulative kWh channels
+                    # so the Energy Dashboard graph stays continuous between
+                    # polls. Idempotent — safe to call on every refresh.
+                    if ch.uom.upper() == "KWH" and not ch.interval:
+                        import_cumulative_history(
+                            self.hass,
+                            sp.id,
+                            ch.id,
+                            ch.type,
+                            matching.readings,
+                        )
 
             points[sp.id] = ServicePointState(
                 service_point=sp, active_meter=active_meter, channels=channels
             )
 
         return EacData(user=user, points=points, last_success_time=datetime.now(UTC))
-
-
-def _latest_reading(channels: list[ChannelReadings], channel_id: str) -> Reading | None:
-    for cr in channels:
-        if cr.channel_id != channel_id or not cr.readings:
-            continue
-        return max(cr.readings, key=lambda r: r.dt)
-    return None
 
 
 def _interval_from_options(entry: ConfigEntry) -> timedelta:
