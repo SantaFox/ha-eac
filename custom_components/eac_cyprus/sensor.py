@@ -86,13 +86,20 @@ def _description_for(uom: str, ch_type: str, interval: bool) -> SensorEntityDesc
             suggested_display_precision=2,
         )
     if uom_upper == "KWH":
+        # No state_class on cumulative kWh sensors: the EAC portal publishes
+        # data with a 2-3 day lag, so HA's auto-recorder would write hourly
+        # statistics off the "latest known value" and clash with our
+        # backfilled history. The canonical long-term data for these
+        # channels lives in external statistics under
+        # eac_cyprus:<sp>_<channel> and is what Energy Dashboard should
+        # pull from. The sensor entity here is just a "latest known value"
+        # display.
         return SensorEntityDescription(
             key=key,
             translation_key=key,
             name=_label(ch_type),
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             device_class=SensorDeviceClass.ENERGY,
-            state_class=SensorStateClass.TOTAL_INCREASING,
             suggested_display_precision=0,
         )
     if uom_upper == "KVAH":

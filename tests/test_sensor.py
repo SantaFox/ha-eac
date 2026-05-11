@@ -37,12 +37,15 @@ async def test_full_setup_creates_sensors(
     # single active service point.
     assert len(states) == 3
 
-    # Check the cumulative total sensor.
+    # Check the cumulative total sensor. It must NOT advertise state_class:
+    # for a delayed-data provider the canonical history lives in external
+    # statistics, and HA's auto-record on a total_increasing sensor would
+    # collide with that. See custom_components/eac_cyprus/statistics.py.
     total = next(s for s in states if "total_24h" in s.entity_id)
     assert total.state == "2974.0"
     assert total.attributes["unit_of_measurement"] == UnitOfEnergy.KILO_WATT_HOUR
     assert total.attributes["device_class"] == SensorDeviceClass.ENERGY
-    assert total.attributes["state_class"] == SensorStateClass.TOTAL_INCREASING
+    assert "state_class" not in total.attributes
     assert total.attributes["channel_type"] == "S-KWH-24H"
     assert "last_cumulative_reading" in total.attributes
 

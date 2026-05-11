@@ -17,7 +17,18 @@ One Home Assistant device per active service point at your address, identified w
 
 Sensors appear only for channels that the API actually returns data for, so the entity list stays tidy. New channels start appearing automatically when the meter starts reporting them.
 
-On every poll the integration also pushes hourly long-term statistics for the cumulative kWh channels via `async_import_statistics`. This keeps the Energy Dashboard graph continuous: history is filled in from the API, not only from the moment you installed the integration.
+### Sensors are "latest known value", history lives in external statistics
+
+The EAC portal publishes meter data with a lag of 2-3 days. A sensor entity showing yesterday's reading as "now" is a poor fit for HA's real-time model, so this integration treats the sensor entities as glance displays of the most recent known value, not as the source of truth for historical graphs.
+
+The canonical history is published separately as Home Assistant **external statistics** with `statistic_id` of the form `eac_cyprus:<service_point>_<channel>`. Energy Dashboard sees them as their own entries in the "Add consumption" dropdown, listed as "EAC <address> <channel>". Pick those, not the sensor entities, when configuring Energy Dashboard.
+
+Concretely:
+- For total consumption: pick `EAC <address> S-KWH-24H` in Electricity grid, Add consumption.
+- For two-tariff plans: `EAC <address> S-KWH-NORMAL` and `EAC <address> S-KWH-OFFPEAK`.
+- For PV export (once the channel starts reporting): `EAC <address> S-KWH-EXP` in Solar panels, Add solar production.
+
+Cumulative kWh sensor entities deliberately do not have `state_class=total_increasing`, so the recorder does not write its own auto-statistics for them and there is no chance of a collision with the backfilled history.
 
 ## Configuration
 
