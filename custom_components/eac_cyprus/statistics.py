@@ -63,20 +63,30 @@ def import_cumulative_history(
     """
     entity_id = _resolve_entity_id(hass, sp_id, channel_id)
     if entity_id is None:
+        _LOGGER.info(
+            "Skipping stats import for sp=%s mc=%s: sensor not registered yet",
+            sp_id,
+            channel_id,
+        )
         return
 
     points = [r for r in readings if r.reading is not None]
     if not points:
+        _LOGGER.info(
+            "Skipping stats import for %s: %d readings, none cumulative",
+            entity_id,
+            len(readings),
+        )
         return
 
-    metadata = StatisticMetaData(
-        has_mean=False,
-        has_sum=True,
-        name=channel_name,
-        source="recorder",
-        statistic_id=entity_id,
-        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-    )
+    metadata: StatisticMetaData = {
+        "has_mean": False,
+        "has_sum": True,
+        "name": channel_name,
+        "source": "recorder",
+        "statistic_id": entity_id,
+        "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+    }
 
     stats: list[StatisticData] = []
     for r in points:
@@ -87,13 +97,23 @@ def import_cumulative_history(
         start = r.dt.replace(minute=0, second=0, microsecond=0)
         if start.tzinfo is None:
             start = start.replace(tzinfo=UTC)
-        stats.append(StatisticData(start=start, sum=r.reading, state=r.reading))
+        stats.append({"start": start, "sum": r.reading, "state": r.reading})
 
-    _LOGGER.debug(
-        "Importing %d statistics rows for %s (sp=%s mc=%s)",
-        len(stats),
-        entity_id,
-        sp_id,
-        channel_id,
-    )
-    async_import_statistics(hass, metadata, stats)
+    try:
+        async_import_statistics(hass, metadata, stats)
+    except Exception:  # noqa: BLE001 - we want any recorder exception in logs
+        _LOGGER.exception(
+            "async_import_statistics raised for %s (rows=%d, first=%s, last=%s)",
+            entity_id,
+            len(stats),
+            stats[0]["start"].isoformat(),
+            stats[-1]["start"].isoformat(),
+        )
+    else:
+        _LOGGER.info(
+            "Imported %d statistics rows for %s (range %s → %s)",
+            len(stats),
+            entity_id,
+            stats[0]["start"].isoformat(),
+            stats[-1]["start"].isoformat(),
+        )
