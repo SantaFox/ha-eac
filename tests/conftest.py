@@ -26,8 +26,14 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations):
-    """Make custom_components/eac_cyprus loadable by HA in tests."""
+def auto_enable_custom_integrations(recorder_mock, enable_custom_integrations):
+    """Make custom_components/eac_cyprus loadable + spin up an in-memory recorder.
+
+    The order matters: ``recorder_mock`` must be requested *before* the ``hass``
+    fixture is set up (``enable_custom_integrations`` triggers hass), otherwise
+    PHACC asserts. The recorder is needed because the integration now declares
+    a hard dependency on it for long-term-statistics imports.
+    """
     yield
 
 
