@@ -24,9 +24,11 @@ from .const import (
     CONF_HISTORY_DAYS,
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL_MINUTES,
+    CONF_STALE_THRESHOLD_DAYS,
     DEFAULT_BASE_URL,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL_MINUTES,
+    DEFAULT_STALE_THRESHOLD_DAYS,
     DOMAIN,
     SCAN_INTERVAL_CHOICES,
 )
@@ -130,6 +132,9 @@ class EacOptionsFlow(OptionsFlow):
             CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
         )
         current_history = current.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)
+        current_stale = current.get(
+            CONF_STALE_THRESHOLD_DAYS, DEFAULT_STALE_THRESHOLD_DAYS
+        )
 
         schema = vol.Schema(
             {
@@ -152,6 +157,17 @@ class EacOptionsFlow(OptionsFlow):
                     selector.NumberSelectorConfig(
                         min=1,
                         max=60,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="days",
+                    ),
+                ),
+                vol.Required(
+                    CONF_STALE_THRESHOLD_DAYS, default=current_stale
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=30,
                         step=1,
                         mode=selector.NumberSelectorMode.BOX,
                         unit_of_measurement="days",

@@ -72,7 +72,7 @@ async def test_imports_cumulative_kwh_with_correct_metadata(
         "custom_components.eac_cyprus.statistics.async_add_external_statistics"
     ) as mock_add:
         import_cumulative_history(
-            hass, "863224497404", "mc-total", "S-KWH-24H", rdgs
+            hass, "863224497404", "mc-total", "1281890 Energy total (24h)", rdgs
         )
 
     mock_add.assert_called_once()
@@ -82,8 +82,8 @@ async def test_imports_cumulative_kwh_with_correct_metadata(
     assert metadata["has_sum"] is True
     assert metadata["has_mean"] is False
     assert metadata["unit_of_measurement"] == UnitOfEnergy.KILO_WATT_HOUR
-    # Short name: integration tag, last four of sp id, channel type.
-    assert metadata["name"] == "EAC 7404 S-KWH-24H"
+    # Display name is passed through verbatim (meter serial + channel label).
+    assert metadata["name"] == "1281890 Energy total (24h)"
 
     assert len(stats) == 3
     for s, expected_reading in zip(stats, [2900.0, 2924.0, 2950.0], strict=True):

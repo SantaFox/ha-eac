@@ -1,9 +1,14 @@
 """Sensor platform for the EAC Cyprus integration.
 
-Sensors are created dynamically per service point × per measurement channel
-that returned data on the latest poll. When the meter starts reporting new
-channels (e.g. ``S-KWH-EXP`` after a PV install) those sensors appear on the
-next refresh without re-configuring the integration.
+Devices are meters: one HA device per physical meter on a service point, the
+service point itself acting as the parent device. Each meter exposes:
+
+- a "last value" glance per measurement channel (what HA knows right now), and
+- per-meter diagnostics: when the newest reading was measured / received, and
+  the resulting data lag.
+
+The canonical history lives in external statistics (see statistics.py); the
+entities here are the "what does HA know now" half of the picture.
 """
 from __future__ import annotations
 
@@ -23,55 +28,31 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
     UnitOfReactivePower,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
-from .coordinator import EacCoordinator, ServicePointState
+from .const import DOMAIN, MANUFACTURER, channel_label
+from .coordinator import EacCoordinator, MeterState, ServicePoint
 
 _LOGGER = logging.getLogger(__name__)
 
 
-# Human labels for the channel types EAC exposes. The keys mirror mcList[].type
-# from /api/portal/servicePoints/{id}.
-_CHANNEL_LABELS: dict[str, str] = {
-    "S-KWH-24H": "Energy total (24h)",
-    "S-KWH-NORMAL": "Energy peak tariff",
-    "S-KWH-OFFPEAK": "Energy off-peak tariff",
-    "S-KWH-EXP": "Energy exported",
-    "KWH-30MIN-LP-IMP": "Power import (30-min average)",
-    "KWH-30MIN-LP-EXP": "Power export (30-min average)",
-    "S-KVAH-24H": "Apparent energy",
-    "S-KVAH-24H-EXP": "Apparent energy exported",
-    "S-KVRH-24H": "Reactive energy",
-    "S-KVRH-24H-EXP": "Reactive energy exported",
-    "S-KWH": "Energy total",
-}
-
-# kWh consumed in a fixed-length slot is meaningful as average power: a slot
-# of length T hours consuming E kWh means average power E / T kW. For 30-min
-# slots that is 2 × the kWh value.
-_INTERVAL_TO_POWER_FACTOR: dict[str, float] = {
-    "30MIN": 2.0,
-}
+_INTERVAL_TO_POWER_FACTOR: dict[str, float] = {"30MIN": 2.0}
 
 
-def _label(ch_type: str) -> str:
-    return _CHANNEL_LABELS.get(ch_type, ch_type)
+def _value_description(uom: str, ch_type: str, interval: bool) -> SensorEntityDescription:
+    """Describe the 'last value' glance sensor for one channel.
 
-
-def _description_for(uom: str, ch_type: str, interval: bool) -> SensorEntityDescription:
-    """Build the SensorEntityDescription for one channel.
-
-    Cumulative kWh channels become ``total_increasing`` so they feed straight
-    into Home Assistant's Energy Dashboard. Interval (30-min) kWh channels are
-    re-projected to average power (kW) since HA's sensor contract forbids
-    ``device_class=energy`` with ``state_class=measurement``; the conversion
-    happens in :meth:`EacChannelSensor.native_value`.
+    Cumulative kWh channels are a plain latest-value display with NO state_class
+    (the recorder must not auto-compile lag-shifted statistics off them; the
+    real history is imported as external statistics). Interval (30-min) kWh
+    channels are re-projected to average power.
     """
     uom_upper = (uom or "").upper()
     key = f"{ch_type}".lower().replace("-", "_") or "channel"
@@ -79,25 +60,16 @@ def _description_for(uom: str, ch_type: str, interval: bool) -> SensorEntityDesc
     if uom_upper == "KWH" and interval:
         return SensorEntityDescription(
             key=key,
-            name=_label(ch_type),
+            name=channel_label(ch_type),
             native_unit_of_measurement=UnitOfPower.KILO_WATT,
             device_class=SensorDeviceClass.POWER,
             state_class=SensorStateClass.MEASUREMENT,
             suggested_display_precision=2,
         )
     if uom_upper == "KWH":
-        # No state_class on cumulative kWh sensors: the EAC portal publishes
-        # data with a 2-3 day lag, so HA's auto-recorder would write hourly
-        # statistics off the "latest known value" and clash with our
-        # backfilled history. The canonical long-term data for these
-        # channels lives in external statistics under
-        # eac_cyprus:<sp>_<channel> and is what Energy Dashboard should
-        # pull from. The sensor entity here is just a "latest known value"
-        # display.
         return SensorEntityDescription(
             key=key,
-            translation_key=key,
-            name=_label(ch_type),
+            name=channel_label(ch_type),
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             device_class=SensorDeviceClass.ENERGY,
             suggested_display_precision=0,
@@ -105,14 +77,14 @@ def _description_for(uom: str, ch_type: str, interval: bool) -> SensorEntityDesc
     if uom_upper == "KVAH":
         return SensorEntityDescription(
             key=key,
-            name=_label(ch_type),
+            name=channel_label(ch_type),
             native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
             entity_registry_enabled_default=False,
         )
     if uom_upper in ("KVARH", "KVRH"):
         return SensorEntityDescription(
             key=key,
-            name=_label(ch_type),
+            name=channel_label(ch_type),
             native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
             entity_registry_enabled_default=False,
         )
@@ -124,153 +96,203 @@ def _description_for(uom: str, ch_type: str, interval: bool) -> SensorEntityDesc
     )
 
 
+def sp_device_info(sp: ServicePoint) -> DeviceInfo:
+    """Parent device: the permanent service point (supply contract at an address)."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, sp.id)},
+        name=sp.address or f"EAC service point {sp.id}",
+        manufacturer=MANUFACTURER,
+        model="Service point",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url=f"https://meterreading-dso.eac.com.cy/sp/{sp.id}",
+    )
+
+
+def meter_device_info(ms: MeterState) -> DeviceInfo:
+    """Child device: one physical meter, named by its serial, under the SP."""
+    m = ms.meter
+    name = m.serial_number or ms.key
+    if m.manufacturer:
+        name = f"{m.manufacturer} {name}"
+    return DeviceInfo(
+        identifiers={(DOMAIN, ms.key)},
+        name=name,
+        manufacturer=m.manufacturer or MANUFACTURER,
+        model=m.model,
+        serial_number=m.serial_number,
+        via_device=(DOMAIN, ms.service_point.id),
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Create sensors for all currently-known channels and watch for new ones."""
+    """Create meter devices and their sensors; watch for new meters/channels."""
     coordinator: EacCoordinator = hass.data[DOMAIN][entry.entry_id]
+    device_reg = dr.async_get(hass)
 
-    known_channels: set[tuple[str, str]] = set()  # (service_point_id, channel_id)
-    known_diagnostic: set[str] = set()  # service_point_id
+    known_channels: set[tuple[str, str]] = set()  # (meter_key, channel_id)
+    known_meters: set[str] = set()  # meter_key (diagnostics created once)
+    known_sps: set[str] = set()
 
     @callback
     def _add_new_entities() -> None:
-        new_entities: list[CoordinatorEntity[EacCoordinator]] = []
+        new: list[CoordinatorEntity[EacCoordinator]] = []
         for sp_state in coordinator.data.points.values():
-            for ch_state in sp_state.channels.values():
-                key = (sp_state.service_point.id, ch_state.channel.id)
-                if key in known_channels:
-                    continue
-                known_channels.add(key)
-                new_entities.append(
-                    EacChannelSensor(coordinator, sp_state, ch_state.channel.id)
+            sp = sp_state.service_point
+            if sp_state.meters and sp.id not in known_sps:
+                known_sps.add(sp.id)
+                device_reg.async_get_or_create(
+                    config_entry_id=entry.entry_id, **sp_device_info(sp)
                 )
-            # One diagnostic sensor per device (= per active service point that
-            # produced a meter config). Inactive points don't get a device, so
-            # they don't get one either.
-            if (
-                sp_state.active_meter is not None
-                and sp_state.service_point.id not in known_diagnostic
-            ):
-                known_diagnostic.add(sp_state.service_point.id)
-                new_entities.append(EacLastUpdateSensor(coordinator, sp_state))
-        if new_entities:
-            async_add_entities(new_entities)
+            for ms in sp_state.meters.values():
+                for ch_state in ms.channels.values():
+                    key = (ms.key, ch_state.channel.id)
+                    if key in known_channels:
+                        continue
+                    known_channels.add(key)
+                    new.append(EacChannelSensor(coordinator, sp.id, ms.key, ch_state.channel.id))
+                # Per-meter diagnostics, only for the active meter.
+                if ms.active and ms.key not in known_meters:
+                    known_meters.add(ms.key)
+                    new.extend(
+                        cls(coordinator, sp.id, ms.key)
+                        for cls in (EacMeasuredAtSensor, EacReceivedAtSensor, EacLagSensor)
+                    )
+        if new:
+            async_add_entities(new)
 
     _add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(_add_new_entities))
 
 
-def _device_info_for(sp_state: ServicePointState) -> DeviceInfo:
-    meter = sp_state.active_meter
-    return DeviceInfo(
-        identifiers={(DOMAIN, sp_state.service_point.id)},
-        name=sp_state.service_point.address or f"EAC {sp_state.service_point.id}",
-        manufacturer=meter.manufacturer if meter else MANUFACTURER,
-        model=meter.model if meter else None,
-        serial_number=meter.serial_number if meter else sp_state.service_point.serial_number,
-        configuration_url=(
-            f"https://meterreading-dso.eac.com.cy/sp/{sp_state.service_point.id}"
-        ),
-    )
-
-
-class EacChannelSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
-    """One reading channel of one service point."""
+class _MeterEntity(CoordinatorEntity[EacCoordinator]):
+    """Base: resolves the MeterState for an entity from coordinator data."""
 
     _attr_has_entity_name = True
 
-    def __init__(
-        self,
-        coordinator: EacCoordinator,
-        sp_state: ServicePointState,
-        channel_id: str,
-    ) -> None:
+    def __init__(self, coordinator: EacCoordinator, sp_id: str, meter_key: str) -> None:
         super().__init__(coordinator)
-        self._sp_id = sp_state.service_point.id
-        self._channel_id = channel_id
-        ch_state = sp_state.channels[channel_id]
-        ch = ch_state.channel
-        self.entity_description = _description_for(ch.uom, ch.type, ch.interval)
-        self._attr_unique_id = f"{self._sp_id}_{self._channel_id}"
-
-        self._attr_device_info = _device_info_for(sp_state)
+        self._sp_id = sp_id
+        self._meter_key = meter_key
 
     @property
-    def _ch_state(self):
+    def _meter(self) -> MeterState | None:
         sp_state = self.coordinator.data.points.get(self._sp_id)
         if sp_state is None:
             return None
-        return sp_state.channels.get(self._channel_id)
+        return sp_state.meters.get(self._meter_key)
+
+
+class EacChannelSensor(_MeterEntity, SensorEntity):
+    """Latest known value of one channel on one meter."""
+
+    def __init__(
+        self, coordinator: EacCoordinator, sp_id: str, meter_key: str, channel_id: str
+    ) -> None:
+        super().__init__(coordinator, sp_id, meter_key)
+        self._channel_id = channel_id
+        ms = self._meter
+        ch = ms.channels[channel_id].channel
+        self.entity_description = _value_description(ch.uom, ch.type, ch.interval)
+        self._attr_unique_id = f"{meter_key}_{channel_id}"
+        self._attr_device_info = meter_device_info(ms)
+
+    @property
+    def _ch(self):
+        ms = self._meter
+        return ms.channels.get(self._channel_id) if ms else None
 
     @property
     def available(self) -> bool:
-        return super().available and self._ch_state is not None and self._ch_state.latest is not None
+        ch = self._ch
+        return super().available and ch is not None and ch.latest is not None
 
     @property
     def native_value(self) -> float | None:
-        ch_state = self._ch_state
-        if ch_state is None or ch_state.latest is None:
+        ch = self._ch
+        if ch is None or ch.latest is None:
             return None
-        latest = ch_state.latest
-        # Cumulative channels report their running meter total directly.
+        latest = ch.latest
         if latest.reading is not None:
             return latest.reading
-        # Interval channels (e.g. 30-min load profile) get re-projected to
-        # average power: kWh consumed in T hours = kW average for that slot.
-        ch = ch_state.channel
-        factor = _INTERVAL_TO_POWER_FACTOR.get(ch.tou)
-        if factor is not None:
-            return latest.value * factor
-        return latest.value
+        factor = _INTERVAL_TO_POWER_FACTOR.get(ch.channel.tou)
+        return latest.value * factor if factor is not None else latest.value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        ch_state = self._ch_state
-        if ch_state is None or ch_state.latest is None:
+        ch = self._ch
+        if ch is None or ch.latest is None:
             return {}
-        latest = ch_state.latest
         attrs: dict[str, Any] = {
             "channel_id": self._channel_id,
-            "channel_type": ch_state.channel.type,
-            "tou": ch_state.channel.tou,
-            "interval": ch_state.channel.interval,
-            "last_reading_at": _iso(latest.dt),
-            "last_slot_value": latest.value,
+            "channel_type": ch.channel.type,
+            "tou": ch.channel.tou,
+            "interval": ch.channel.interval,
+            "measured_at": _iso(ch.latest.dt),
         }
-        if latest.reading is not None:
-            attrs["last_cumulative_reading"] = latest.reading
+        if ch.latest.reading is not None:
+            attrs["cumulative_reading"] = ch.latest.reading
         return attrs
+
+
+class EacMeasuredAtSensor(_MeterEntity, SensorEntity):
+    """When the newest reading was measured (provider timestamp)."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Data measured at"
+
+    def __init__(self, coordinator: EacCoordinator, sp_id: str, meter_key: str) -> None:
+        super().__init__(coordinator, sp_id, meter_key)
+        self._attr_unique_id = f"{meter_key}_measured_at"
+        self._attr_device_info = meter_device_info(self._meter)
+
+    @property
+    def native_value(self) -> datetime | None:
+        ms = self._meter
+        return ms.measured_at if ms else None
+
+
+class EacReceivedAtSensor(_MeterEntity, SensorEntity):
+    """When HA last fetched fresh data for this meter."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Data received at"
+
+    def __init__(self, coordinator: EacCoordinator, sp_id: str, meter_key: str) -> None:
+        super().__init__(coordinator, sp_id, meter_key)
+        self._attr_unique_id = f"{meter_key}_received_at"
+        self._attr_device_info = meter_device_info(self._meter)
+
+    @property
+    def native_value(self) -> datetime | None:
+        ms = self._meter
+        return ms.received_at if ms else None
+
+
+class EacLagSensor(_MeterEntity, SensorEntity):
+    """Age of the newest reading = received_at - measured_at, in hours."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_suggested_display_precision = 1
+    _attr_name = "Data lag"
+
+    def __init__(self, coordinator: EacCoordinator, sp_id: str, meter_key: str) -> None:
+        super().__init__(coordinator, sp_id, meter_key)
+        self._attr_unique_id = f"{meter_key}_data_lag"
+        self._attr_device_info = meter_device_info(self._meter)
+
+    @property
+    def native_value(self) -> float | None:
+        ms = self._meter
+        if ms is None or ms.measured_at is None or ms.received_at is None:
+            return None
+        return (ms.received_at - ms.measured_at).total_seconds() / 3600.0
 
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
-
-
-class EacLastUpdateSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
-    """Diagnostic timestamp showing when the coordinator last refreshed.
-
-    Lets users distinguish "polling is alive but the DSO has no fresh data"
-    from "polling is broken" without digging into logs. Reports the same
-    value across every device the integration owns — there is one polling
-    cycle for the whole config entry.
-    """
-
-    _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_name = "Last successful update"
-
-    def __init__(
-        self, coordinator: EacCoordinator, sp_state: ServicePointState
-    ) -> None:
-        super().__init__(coordinator)
-        self._sp_id = sp_state.service_point.id
-        self._attr_unique_id = f"{self._sp_id}_last_update"
-        self._attr_device_info = _device_info_for(sp_state)
-
-    @property
-    def native_value(self) -> datetime | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.last_success_time

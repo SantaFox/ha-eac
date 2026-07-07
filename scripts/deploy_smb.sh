@@ -27,11 +27,17 @@ trap 'rm -f "$SCRIPT"' EXIT
   echo "mkdir eac_cyprus" 2>/dev/null || true
   echo "cd eac_cyprus"
   echo "lcd ."
-  for f in *.py *.json; do echo "put $f"; done
+  for f in *.py *.json *.yaml; do echo "put $f"; done
   echo "mkdir translations" 2>/dev/null || true
   echo "cd translations"
   echo "lcd translations"
   for f in translations/*.json; do echo "put $(basename "$f")"; done
+  echo "cd .."
+  echo "lcd .."
+  echo "mkdir brand" 2>/dev/null || true
+  echo "cd brand"
+  echo "lcd brand"
+  for f in brand/*.png; do echo "put $(basename "$f")"; done
 } > "$SCRIPT"
 
 smbclient "//$HA_HOST/$HA_SMB_SHARE" -U "$HA_SMB_USER%$HA_SMB_PASS" -W "$HA_SMB_WORKGROUP" < "$SCRIPT" \

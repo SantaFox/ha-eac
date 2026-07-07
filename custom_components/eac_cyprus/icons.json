@@ -1,0 +1,7 @@
+{
+  "services": {
+    "import_full_history": {
+      "service": "mdi:database-import"
+    }
+  }
+}

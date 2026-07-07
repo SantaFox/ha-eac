@@ -58,10 +58,16 @@ def import_cumulative_history(
     hass: HomeAssistant,
     sp_id: str,
     channel_id: str,
-    channel_name: str,
+    display_name: str,
     readings: tuple[Reading, ...],
 ) -> None:
-    """Push readings for one cumulative kWh channel as hourly external stats."""
+    """Push readings for one cumulative kWh channel as hourly external stats.
+
+    ``display_name`` is what the Energy Dashboard shows; we name it from the
+    meter serial + channel label so it reads e.g. "1281890 Energy total (24h)"
+    instead of a transliterated address. The ``statistic_id`` stays derived
+    from (service point, channel) so it is stable across renames and restarts.
+    """
     points = [r for r in readings if r.reading is not None]
     if not points:
         _LOGGER.info(
@@ -73,17 +79,11 @@ def import_cumulative_history(
         return
 
     statistic_id = external_statistic_id(sp_id, channel_id)
-    # Short name for the Energy Dashboard 'Add consumption' dropdown.
-    # The last four digits of the service-point id disambiguate setups
-    # with multiple service points without dragging the full address
-    # in. The user can always rename a statistic from Settings,
-    # Long-term statistics if they want something more memorable.
-    pretty_name = f"EAC {sp_id[-4:]} {channel_name}"
 
     metadata: StatisticMetaData = {
         "has_mean": False,
         "has_sum": True,
-        "name": pretty_name,
+        "name": display_name,
         "source": DOMAIN,
         "statistic_id": statistic_id,
         "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,

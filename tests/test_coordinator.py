@@ -40,14 +40,15 @@ async def test_coordinator_update_active_and_inactive_points(
     assert datetime.now(UTC) - data.last_success_time < timedelta(seconds=10)
 
     active = data.points["111111111111"]
-    assert active.active_meter is not None
-    assert active.active_meter.serial_number == "NEW123"
+    assert len(active.meters) == 1
+    ms = next(iter(active.meters.values()))
+    assert ms.active is True
+    assert ms.meter.serial_number == "NEW123"
     # Both channels (total + 30min) should produce a ChannelState
-    assert set(active.channels) == {"mc-total-24h", "mc-30min-imp"}
+    assert set(ms.channels) == {"mc-total-24h", "mc-30min-imp"}
 
     inactive = data.points["222222222222"]
-    assert inactive.active_meter is None
-    assert inactive.channels == {}
+    assert inactive.meters == {}
 
 
 async def test_coordinator_update_failed_on_auth_error(
@@ -76,10 +77,10 @@ async def test_coordinator_skips_failing_service_point(
     coord = EacCoordinator(hass, mock_client, entry)
     data = await coord._async_update_data()
 
-    # Both SPs still listed, but the active one has no channels because
+    # Both SPs still listed, but the active one has no meters because
     # we couldn't fetch its config.
     assert set(data.points) == {"111111111111", "222222222222"}
-    assert data.points["111111111111"].channels == {}
+    assert data.points["111111111111"].meters == {}
 
 
 async def test_coordinator_drops_channels_without_data(
@@ -102,4 +103,6 @@ async def test_coordinator_drops_channels_without_data(
     data = await coord._async_update_data()
 
     # Only the channel that returned data is present.
-    assert set(data.points["111111111111"].channels) == {"mc-total-24h"}
+    meters = data.points["111111111111"].meters
+    ms = next(iter(meters.values()))
+    assert set(ms.channels) == {"mc-total-24h"}

@@ -1,0 +1,6 @@
+import_full_history:
+  name: Import full history
+  description: >-
+    Backfill the complete available meter history from the EAC portal into
+    long-term statistics, for every meter on the account (active and retired).
+    One-time operation; safe to re-run.
